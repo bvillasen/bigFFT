@@ -67,10 +67,11 @@ int main(int argc, char **argv){
   }
 
   /* Set size of FFT and process mesh */
-  int nx_total, ny_total, nz_total;
-  nz_total = 128;
-  ny_total = 128;
-  nx_total = 128;
+  int nx_total, ny_total, nz_total, nPoints;
+  nPoints = 512;
+  nz_total = nPoints;
+  ny_total = nPoints;
+  nx_total = nPoints;
   n[0] = nz_total; n[1] = ny_total; n[2] = nx_total;
 
   int nx_local, ny_local, nz_local, n_cells_local;
@@ -168,7 +169,7 @@ int main(int argc, char **argv){
   }
 
   // string data_name = "/density_1";
-  Write_Data_HDF5( file_id, "/density", nx_local, ny_local, nz_local, in_re );
+  // Write_Data_HDF5( file_id, "/density", nx_local, ny_local, nz_local, in_re );
 
 
   // First slab transfer
@@ -183,6 +184,25 @@ int main(int argc, char **argv){
     if (procID == i)  printf("Processor %d: slab_id %d  slab_pId %d\n", procID, slab_id, slab_pId );
     usleep(1e5);
   }
+
+  if( procID == 0 ) printf("Making 2D FFTW plan\n" );
+  fftw_complex *fft_in_1, *fft_out_1;
+  fftw_plan plan_1;
+  fft_in_1  = (fftw_complex*) fftw_malloc( ny_total*nx_total*sizeof(fftw_complex) );
+  fft_out_1 = (fftw_complex*) fftw_malloc( ny_total*nx_total*sizeof(fftw_complex) );
+  plan_1 = fftw_plan_dft_2d( ny_total, nx_total, fft_in_1, fft_out_1, FFTW_FORWARD, FFTW_MEASURE);
+
+  if( procID == 0 ) printf("Making 1D FFTW plan\n" );
+  fftw_complex *fft_in_2, *fft_out_2;
+  fftw_plan plan_2;
+  fft_in_2  = (fftw_complex*) fftw_malloc( nz_total *sizeof(fftw_complex) );
+  fft_out_2 = (fftw_complex*) fftw_malloc( nz_total *sizeof(fftw_complex) );
+  plan_2 = fftw_plan_dft_1d( nz_total, fft_in_2, fft_out_2, FFTW_FORWARD, FFTW_MEASURE);
+
+
+
+  double time_start, time_end;
+  time_start = MPI_Wtime();
 
 
   if( procID == 0 ) printf("Sending to first slab\n" );
@@ -215,7 +235,7 @@ int main(int argc, char **argv){
   double *slab_data;
   slab_data = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
   int pId_temp, pId_z_temp, pId_y_temp, pId_x_temp;
-  int slab_x_start, slab_y_start; // slab_x_end, slab_y_end;
+  int slab_x_start, slab_y_start, slab_z_start; // slab_x_end, slab_y_end;
   int idx_gather, idx_data;
   for ( int np=0; np<nProcess_slab; np++ ){
     pId_temp = slab_id*nProcess_slab + np;
@@ -234,13 +254,29 @@ int main(int argc, char **argv){
       }
     }
   }
-  Write_Data_HDF5( file_id, "/slab", nx_total, ny_total, slab_nz, slab_data  );
+  // Write_Data_HDF5( file_id, "/slab", nx_total, ny_total, slab_nz, slab_data  );
 
-  if( procID == 0 ) printf("Sending to second slab\n" );
+  // if( procID == 0 ) printf(" Getting 2D FFTs...\n" );
+  // int idx_fft;
+  // for( k=0; k<slab_nz; k++ ){
+  //   for( j=0; j<ny_total; j++ ){
+  //     for( i=0; i<nx_total; i++ ){
+  //       idx_fft = i + j*nx_total;
+  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
+  //       fft_in_1[idx_fft][0] = slab_data[idx_slab];
+  //       fft_in_1[idx_fft][1] = 0;
+  //     }
+  //   }
+  //   fftw_execute( plan_1 );
+  // }
+
+
+
+  if( procID == 0 ) printf("Sending to second slab (complex)\n" );
   double *slab2_gather;
   double *slab2_local;
   int slab2_ny = ny_total/nproc;
-  int send_size_2 = slab_nz * nx_total * slab2_ny;
+  int send_size_2 = 2 * slab_nz * nx_total * slab2_ny;
   slab2_gather = (double *) malloc( nproc * send_size_2 *sizeof(double) );
   slab2_local  = (double *) malloc( send_size_2 *sizeof(double) );
   for ( int np=0; np<nproc; np++ ){
@@ -250,7 +286,8 @@ int main(int argc, char **argv){
         for(i=0; i<nx_total; i++ ){
           idx = i + (j+slab_y_start)*nx_total + k*nx_total*ny_total;
           idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-          slab2_local[idx_slab] = slab_data[idx];
+          slab2_local[2*idx_slab] = slab_data[idx];
+          slab2_local[2*idx_slab+1] = slab_data[idx];
         }
       }
     }
@@ -258,11 +295,13 @@ int main(int argc, char **argv){
   }
 
 
+
   // order the data to in slab
   if( procID == 0 ) printf(" Writing second slab\n" );
-  double *slab2_data;
-  slab2_data = (double *) malloc( nproc * send_size_2 *sizeof(double) );
-  int slab_z_start;
+  double *slab2_real, *slab2_imag;
+  slab2_real = (double *) malloc( nproc * send_size_2 / 2 *sizeof(double) );
+  slab2_imag = (double *) malloc( nproc * send_size_2 / 2 *sizeof(double) );
+  // int slab_z_start;
   for ( int np=0; np<nproc; np++ ){
     pId_temp = np;
     get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
@@ -270,14 +309,38 @@ int main(int argc, char **argv){
     for( k=0; k<slab_nz; k++){
       for( j=0; j<slab2_ny; j++){
         for(i=0; i<nx_total; i++ ){
-          idx_gather = np*send_size_2 + i + j*nx_total + k*nx_total*slab2_ny;
+          idx_gather = np*send_size_2 + 2*(i + j*nx_total + k*nx_total*slab2_ny);
           idx_data   = i + j*nx_total + (k+slab_z_start)*nx_total*slab2_ny;
-          slab2_data[idx_data] = slab2_gather[idx_gather];
+          slab2_real[idx_data] = slab2_gather[idx_gather];
+          slab2_imag[idx_data] = slab2_gather[idx_gather+1];
         }
       }
     }
   }
-  Write_Data_HDF5( file_id, "/slab2", nx_total, slab2_ny, nz_total, slab2_data  );
+  // Write_Data_HDF5( file_id, "/slab2_real", nx_total, slab2_ny, nz_total, slab2_real  );
+  // Write_Data_HDF5( file_id, "/slab2_imag", nx_total, slab2_ny, nz_total, slab2_imag  );
+
+
+
+  // if( procID == 0 ) printf(" Getting 1D FFTs...\n" );
+  // int idx_fft;
+  // for( k=0; k<slab_nz; k++ ){
+  //   for( j=0; j<ny_total; j++ ){
+  //     for( i=0; i<nx_total; i++ ){
+  //       idx_fft = i + j*nx_total;
+  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
+  //       fft_in_1[idx_fft][0] = slab_data[idx_slab];
+  //       fft_in_1[idx_fft][1] = 0;
+  //     }
+  //   }
+  //   fftw_execute( plan_1 );
+  // }
+
+
+  time_end = MPI_Wtime();
+  if( procID == 0 ) printf("\nTime total: %f\n", time_end-time_start );
+
+
 
   // Close the file
   status = H5Fclose(file_id);
