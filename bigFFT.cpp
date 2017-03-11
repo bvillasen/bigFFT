@@ -8,6 +8,7 @@
 #include <fftw3.h>
 #include <unistd.h>
 #include <ctime>
+#include <omp.h>
 
 using namespace std;
 
@@ -150,8 +151,6 @@ int main(int argc, char **argv){
       for (i=0; i<nx_local; i++) {
         id = i + j*nx_local + k*nx_local*ny_local;
 
-        // get the centered cell positions at (i,j,k)
-        // Get_Position(i, j, k, &x_pos, &y_pos, &z_pos);
         x_pos = x_min_local + i*dx + 0.5*dx;
         y_pos = y_min_local + j*dy + 0.5*dy;
         z_pos = z_min_local + k*dz + 0.5*dz;
@@ -185,6 +184,14 @@ int main(int argc, char **argv){
     usleep(1e5);
   }
 
+
+  // Initializing FFTW with openMP supported
+  int error;
+  error = fftw_init_threads();
+  if ( error != 0 ) { if( procID == 0 ) printf("FFTW_openMP initialized\n" ); }
+  else printf("[pID: %d] ERROR: FFTW initialize error ", procID );
+
+
   if( procID == 0 ) printf("Making 2D FFTW plan\n" );
   fftw_complex *fft_in_1, *fft_out_1;
   fftw_plan plan_1_fwd, plan_1_bck;
@@ -217,9 +224,6 @@ int main(int argc, char **argv){
   int z_start, z_end;
   int idx_slab, idx;
   for( int np=0; np<nProcess_slab; np++ ){
-    // z_start = np*slab_nz;
-    // z_end = (np+1)*slab_nz;
-    // Get the local data in to slab_local
     for( k=0; k<slab_nz; k++){
       for( j=0; j<ny_local; j++){
         for(i=0; i<nx_local; i++ ){
@@ -245,9 +249,7 @@ int main(int argc, char **argv){
     pId_temp = slab_id*nProcess_slab + np;
     get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
     slab_x_start = pId_x_temp * nx_local;
-    // slab_x_end   = (pId_x_temp+1) * nx_local;
     slab_y_start = pId_y_temp * ny_local;
-    // slab_y_end   = (pId_y_temp+1) * ny_local;
     for( k=0; k<slab_nz; k++){
       for( j=0; j<ny_local; j++){
         for(i=0; i<nx_local; i++ ){
@@ -364,12 +366,6 @@ int main(int argc, char **argv){
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   if( procID == 0 ) printf("Sending back second slab (complex)\n" );
-  // double *slab2_gather;
-  // double *slab2_local;
-  // int slab2_ny = ny_total/nproc;
-  // int send_size_2 = 2 * slab_nz * nx_total * slab2_ny;
-  // slab2_gather = (double *) malloc( nproc * send_size_2 *sizeof(double) );
-  // slab2_local  = (double *) malloc( send_size_2 *sizeof(double) );
   for ( int np=0; np<nproc; np++ ){
     slab_z_start = np*slab_nz;
     for( k=0; k<slab_nz; k++){
@@ -387,18 +383,7 @@ int main(int argc, char **argv){
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   // order the data to in slab
   if( procID == 0 ) printf(" Writing first slab\n" );
-  // double *slab_data;
-  // slab_data = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
-  // int pId_temp, pId_z_temp, pId_y_temp, pId_x_temp;
-  // int slab_x_start, slab_y_start, slab_z_start; // slab_x_end, slab_y_end;
-  // int idx_gather, idx_data;
   for ( int np=0; np<nproc; np++ ){
-    // pId_temp = slab_id*nProcess_slab + np;
-    // get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
-    // slab_x_start = pId_x_temp * nx_local;
-    // slab_x_end   = (pId_x_temp+1) * nx_local;
-    // slab_y_start = np * slab2_ny ;
-    // slab_y_end   = (pId_y_temp+1) * ny_local;
     slab_y_start = np * slab2_ny;
     for( k=0; k<slab_nz; k++){
       for( j=0; j<slab2_ny; j++){
@@ -421,19 +406,11 @@ int main(int argc, char **argv){
 
   // order the data to in slab
   if( procID == 0 ) printf(" Sending back first slab\n" );
-  // double *slab_real, *slab_imag;
-  // slab_real = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
-  // slab_imag = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
-  // int pId_temp, pId_z_temp, pId_y_temp, pId_x_temp;
-  // int slab_x_start, slab_y_start, slab_z_start; // slab_x_end, slab_y_end;
-  // int idx_gather, idx_data;
   for ( int np=0; np<nProcess_slab; np++ ){
     pId_temp = slab_id*nProcess_slab + np;
     get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
     slab_x_start = pId_x_temp * nx_local;
-    // slab_x_end   = (pId_x_temp+1) * nx_local;
     slab_y_start = pId_y_temp * ny_local;
-    // slab_y_end   = (pId_y_temp+1) * ny_local;
     for( k=0; k<slab_nz; k++){
       for( j=0; j<ny_local; j++){
         for(i=0; i<nx_local; i++ ){
@@ -465,39 +442,6 @@ int main(int argc, char **argv){
     }
   }
   if( saveData ) Write_Data_HDF5( file_id, "/slab4_real", nx_local, ny_local, nz_local, in_re  );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  // Write_Data_HDF5( file_id, "/slab", nx_total, ny_total, slab_nz, slab_real  );
-
-
-
-
-
-
-
-
-
-
-
-
 
 
   time_end = MPI_Wtime();
