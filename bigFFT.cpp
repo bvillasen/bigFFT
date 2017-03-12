@@ -49,8 +49,6 @@ void Write_Header_HDF5(hid_t file_id, int nx_total, int ny_total, int nz_total,
 
 void Write_Data_HDF5(hid_t file_id, string data_name, int nx, int ny, int nz, double *field_re );
 
-void Write_Grid_HDF5(hid_t file_id, int nx, int ny, int nz, double *field_re );
-
 
 int main(int argc, char **argv){
 
@@ -69,7 +67,7 @@ int main(int argc, char **argv){
 
   /* Set size of FFT and process mesh */
   int nx_total, ny_total, nz_total, nPoints;
-  nPoints = 128;
+  nPoints = 512;
   nz_total = nPoints;
   ny_total = nPoints;
   nx_total = nPoints;
@@ -190,15 +188,27 @@ int main(int argc, char **argv){
   error = fftw_init_threads();
   if ( error != 0 ) { if( procID == 0 ) printf("FFTW_openMP initialized\n" ); }
   else printf("[pID: %d] ERROR: FFTW initialize error ", procID );
-
+  int nThreads = 4;
+  omp_set_num_threads( nThreads );
+  fftw_plan_with_nthreads( nThreads );
 
   if( procID == 0 ) printf("Making 2D FFTW plan\n" );
   fftw_complex *fft_in_1, *fft_out_1;
+  fftw_complex *fft_in_1_many, *fft_out_1_many;
   fftw_plan plan_1_fwd, plan_1_bck;
+  fftw_plan plan_1_fwd_many, plan_1_bck_many;
   fft_in_1  = (fftw_complex*) fftw_malloc( ny_total*nx_total*sizeof(fftw_complex) );
   fft_out_1 = (fftw_complex*) fftw_malloc( ny_total*nx_total*sizeof(fftw_complex) );
+  fft_in_1_many  = (fftw_complex*) fftw_malloc( (nz_total/nproc)* ny_total*nx_total*sizeof(fftw_complex) );
+  fft_out_1_many = (fftw_complex*) fftw_malloc( (nz_total/nproc)* ny_total*nx_total*sizeof(fftw_complex) );
+
   plan_1_fwd = fftw_plan_dft_2d( ny_total, nx_total, fft_in_1, fft_out_1, FFTW_FORWARD, FFTW_MEASURE);
   plan_1_bck = fftw_plan_dft_2d( ny_total, nx_total, fft_in_1, fft_out_1, FFTW_BACKWARD, FFTW_MEASURE);
+  int dim_FFT_2d[] = {ny_total, nx_total};
+  plan_1_fwd_many = fftw_plan_many_dft( 2, dim_FFT_2d, nz_total/nproc,
+                       fft_in_1_many, dim_FFT_2d, 1, nx_total*ny_total,
+                       fft_out_1_many, dim_FFT_2d, 1, nx_total*ny_total,
+                       FFTW_FORWARD, FFTW_MEASURE );
 
   if( procID == 0 ) printf("Making 1D FFTW plan\n" );
   fftw_complex *fft_in_2, *fft_out_2;
@@ -265,22 +275,44 @@ int main(int argc, char **argv){
 
   if( procID == 0 ) printf(" Getting 2D FFTs...\n" );
   int idx_fft;
+  // for( k=0; k<slab_nz; k++ ){
+  //   for( j=0; j<ny_total; j++ ){
+  //     for( i=0; i<nx_total; i++ ){
+  //       idx_fft = i + j*nx_total;
+  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
+  //       fft_in_1[idx_fft][0] = slab_real[idx_slab];
+  //       fft_in_1[idx_fft][1] = 0;
+  //     }
+  //   }
+  //   fftw_execute( plan_1_fwd );
+  //   for( j=0; j<ny_total; j++ ){
+  //     for( i=0; i<nx_total; i++ ){
+  //       idx_fft = i + j*nx_total;
+  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
+  //       slab_real[idx_slab] = fft_out_1[idx_fft][0];
+  //       slab_imag[idx_slab] = fft_out_1[idx_fft][1];
+  //     }
+  //   }
+  // }
+
   for( k=0; k<slab_nz; k++ ){
     for( j=0; j<ny_total; j++ ){
       for( i=0; i<nx_total; i++ ){
-        idx_fft = i + j*nx_total;
+        idx_fft  = i + j*nx_total + k*nx_total*ny_total;
         idx_slab = i + j*nx_total + k*nx_total*ny_total;
-        fft_in_1[idx_fft][0] = slab_real[idx_slab];
-        fft_in_1[idx_fft][1] = 0;
+        fft_in_1_many[idx_fft][0] = slab_real[idx_slab];
+        fft_in_1_many[idx_fft][1] = 0;
       }
     }
-    fftw_execute( plan_1_fwd );
+  }
+  fftw_execute( plan_1_fwd_many );
+  for( k=0; k<slab_nz; k++ ){
     for( j=0; j<ny_total; j++ ){
       for( i=0; i<nx_total; i++ ){
-        idx_fft = i + j*nx_total;
+        idx_fft  = i + j*nx_total + k*nx_total*ny_total;
         idx_slab = i + j*nx_total + k*nx_total*ny_total;
-        slab_real[idx_slab] = fft_out_1[idx_fft][0];
-        slab_imag[idx_slab] = fft_out_1[idx_fft][1];
+        slab_real[idx_slab] = fft_out_1_many[idx_fft][0];
+        slab_imag[idx_slab] = fft_out_1_many[idx_fft][1];
       }
     }
   }
@@ -595,104 +627,6 @@ void Write_Data_HDF5(hid_t file_id, string data_name, int nx, int ny, int nz, do
   status = H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, dataset_buffer);
   // Free the dataset id
   status = H5Dclose(dataset_id);
-
-  free(dataset_buffer);
-}
-
-
-
-void Write_Grid_HDF5(hid_t file_id, int nx, int ny, int nz, double *field_re )
-{
-  int i, j, k, id, buf_id;
-  hid_t     dataset_id, dataspace_id;
-  double      *dataset_buffer;
-  herr_t    status;
-
-  int       nx_dset = nx;
-  int       ny_dset = ny;
-  int       nz_dset = nz;
-  hsize_t   dims[3];
-  dataset_buffer = (double *) malloc(nz_dset*ny_dset*nx_dset*sizeof(double));
-
-  // Create the data space for the datasets
-  dims[0] = nz_dset;
-  dims[1] = ny_dset;
-  dims[2] = nx_dset;
-  dataspace_id = H5Screate_simple(3, dims, NULL);
-
-  // Copy the density array to the memory buffer
-  for (k=0; k<nz; k++) {
-    for (j=0; j<ny; j++) {
-      for (i=0; i<nx; i++) {
-        id = i + j*nx + k*nx*ny;
-        buf_id = k + j*nz + i*nz*ny;
-        // dataset_buffer[buf_id] = field[id];
-        dataset_buffer[id] = field_re[id];
-      }
-    }
-  }
-  // Create a dataset id for density
-  dataset_id = H5Dcreate(file_id, "/density", H5T_IEEE_F64BE, dataspace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  // Write the density array to file  // NOTE: NEED TO FIX FOR FLOAT REAL!!!
-  status = H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, dataset_buffer);
-  // Free the dataset id
-  status = H5Dclose(dataset_id);
-
-  // // Copy the density array to the memory buffer
-  // for (k=0; k<nz; k++) {
-  //   for (j=0; j<ny; j++) {
-  //     for (i=0; i<nx; i++) {
-  //       id = i + j*nx + k*nx*ny;
-  //       buf_id = k + j*nz + i*nz*ny;
-  //       // dataset_buffer[buf_id] = field[id];
-  //       dataset_buffer[id] = field_im[id];
-  //     }
-  //   }
-  // }
-  // // Create a dataset id for density
-  // dataset_id = H5Dcreate(file_id, "/in_im", H5T_IEEE_F64BE, dataspace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  // // Write the density array to file  // NOTE: NEED TO FIX FOR FLOAT REAL!!!
-  // status = H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, dataset_buffer);
-  // // Free the dataset id
-  // status = H5Dclose(dataset_id);
-  //
-  //
-  //
-  // // Copy the density array to the memory buffer
-  // for (k=0; k<nz; k++) {
-  //   for (j=0; j<ny; j++) {
-  //     for (i=0; i<nx; i++) {
-  //       id = i + j*nx + k*nx*ny;
-  //       buf_id = k + j*nz + i*nz*ny;
-  //       // dataset_buffer[buf_id] = field[id];
-  //       dataset_buffer[id] = transf_re[id];
-  //     }
-  //   }
-  // }
-  // // Create a dataset id for density
-  // dataset_id = H5Dcreate(file_id, "/fft_re", H5T_IEEE_F64BE, dataspace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  // // Write the density array to file  // NOTE: NEED TO FIX FOR FLOAT REAL!!!
-  // status = H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, dataset_buffer);
-  // // Free the dataset id
-  // status = H5Dclose(dataset_id);
-  //
-  // // Copy the density array to the memory buffer
-  // for (k=0; k<nz; k++) {
-  //   for (j=0; j<ny; j++) {
-  //     for (i=0; i<nx; i++) {
-  //       id = i + j*nx + k*nx*ny;
-  //       buf_id = k + j*nz + i*nz*ny;
-  //       // dataset_buffer[buf_id] = field[id];
-  //       dataset_buffer[id] = transf_im[id];
-  //     }
-  //   }
-  // }
-  // // Create a dataset id for density
-  // dataset_id = H5Dcreate(file_id, "/fft_im", H5T_IEEE_F64BE, dataspace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  // // Write the density array to file  // NOTE: NEED TO FIX FOR FLOAT REAL!!!
-  // status = H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, dataset_buffer);
-  // // Free the dataset id
-  // status = H5Dclose(dataset_id);
 
   free(dataset_buffer);
 }
