@@ -52,6 +52,9 @@ void Write_Data_HDF5(hid_t file_id, string data_name, int nx, int ny, int nz, do
 
 int main(int argc, char **argv){
 
+
+
+
   /* Initialize MPI and PFFT */
   // MPI_Init(&argc, &argv);
   InitializeChollaMPI(&argc, &argv);
@@ -65,9 +68,10 @@ int main(int argc, char **argv){
     usleep(1e5);
   }
 
+
   /* Set size of FFT and process mesh */
-  int nx_total, ny_total, nz_total, nPoints;
-  nPoints = 512;
+  int nx_total, ny_total, nz_total;
+  const int nPoints = atoi( argv[2] );
   nz_total = nPoints;
   ny_total = nPoints;
   nx_total = nPoints;
@@ -88,6 +92,10 @@ int main(int argc, char **argv){
   ostringstream outFileName;
   outFileName << outDir << fileName << ".h5." << procID;
   // cout << outFileName.str() << endl;
+
+  // READ INLINE parameters
+  int saveData = atoi( argv[1] );
+  if (saveData && procID==0 ) printf("SAVE DATA: %s \n", outFileName.str().c_str() );
 
   // Create a new file collectively
   hid_t   file_id;
@@ -156,16 +164,15 @@ int main(int argc, char **argv){
         r = sqrt( ( x_pos - center_x )*( x_pos - center_x )/(sigma_x*sigma_x) +
             ( y_pos - center_y )*( y_pos - center_y )/(sigma_y*sigma_y) +
             ( z_pos - center_z )*( z_pos - center_z )/(sigma_z*sigma_z) );
-        // dens = exp(-r*r);
-        // dens = 0.6;
+        dens = exp(-r*r);
+        // dens = r;
+        // dens = 0.0;
         // if (r < 0.2 ) dens = 1.0;
-        dens = r;
         in_re[id] = dens;
       }
     }
   }
 
-  bool saveData = true;
   if( saveData ) Write_Data_HDF5( file_id, "/density", nx_local, ny_local, nz_local, in_re );
 
 
@@ -186,12 +193,12 @@ int main(int argc, char **argv){
   // Initializing FFTW with openMP supported
   int error;
   error = fftw_init_threads();
-  if ( error != 0 ) { if( procID == 0 ) printf("FFTW_openMP initialized\n" ); }
+  if ( error != 0 ) { if( procID == 0 ) printf( "\nFFTW_openMP initialized\n" ); }
   else printf("[pID: %d] ERROR: FFTW initialize error ", procID );
-  int nThreads = 4;
+  int nThreads = atoi( argv[3]);
   omp_set_num_threads( nThreads );
   fftw_plan_with_nthreads( nThreads );
-
+  if( procID == 0 ) printf("FFT Threads: %d \n", nThreads );
   if( procID == 0 ) printf("Making 2D FFTW plan\n" );
   fftw_complex *fft_in_1, *fft_out_1;
   fftw_complex *fft_in_1_many, *fft_out_1_many;
@@ -212,11 +219,20 @@ int main(int argc, char **argv){
 
   if( procID == 0 ) printf("Making 1D FFTW plan\n" );
   fftw_complex *fft_in_2, *fft_out_2;
+  fftw_complex *fft_in_2_many, *fft_out_2_many;
   fftw_plan plan_2_fwd, plan_2_bck;
+  fftw_plan plan_2_fwd_many, plan_2_bck_many;
   fft_in_2  = (fftw_complex*) fftw_malloc( nz_total *sizeof(fftw_complex) );
   fft_out_2 = (fftw_complex*) fftw_malloc( nz_total *sizeof(fftw_complex) );
+  fft_in_2_many  = (fftw_complex*) fftw_malloc( nx_total*(ny_total/nproc)*nz_total *sizeof(fftw_complex) );
+  fft_out_2_many = (fftw_complex*) fftw_malloc( nx_total*(ny_total/nproc)*nz_total *sizeof(fftw_complex) );
   plan_2_fwd = fftw_plan_dft_1d( nz_total, fft_in_2, fft_out_2, FFTW_FORWARD, FFTW_MEASURE);
   plan_2_bck = fftw_plan_dft_1d( nz_total, fft_in_2, fft_out_2, FFTW_BACKWARD, FFTW_MEASURE);
+  int dim_FFT_1d[] = {nz_total};
+  plan_2_fwd_many = fftw_plan_many_dft( 1, dim_FFT_1d, (ny_total/nproc)*nx_total,
+                       fft_in_2_many, dim_FFT_1d, 1, nz_total,
+                       fft_out_2_many, dim_FFT_1d, 1, nz_total,
+                       FFTW_FORWARD, FFTW_MEASURE );
 
 
 
@@ -270,7 +286,7 @@ int main(int argc, char **argv){
       }
     }
   }
-  if( saveData ) Write_Data_HDF5( file_id, "/slab", nx_total, ny_total, slab_nz, slab_real  );
+  // if( saveData ) Write_Data_HDF5( file_id, "/slab", nx_total, ny_total, slab_nz, slab_real  );
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
   if( procID == 0 ) printf(" Getting 2D FFTs...\n" );
@@ -363,10 +379,31 @@ int main(int argc, char **argv){
       }
     }
   }
-  if( saveData ) Write_Data_HDF5( file_id, "/slab2_real", nx_total, slab2_ny, nz_total, slab2_real  );
-  if( saveData ) Write_Data_HDF5( file_id, "/slab2_imag", nx_total, slab2_ny, nz_total, slab2_imag  );
+  // if( saveData ) Write_Data_HDF5( file_id, "/slab2_real", nx_total, slab2_ny, nz_total, slab2_real  );
+  // if( saveData ) Write_Data_HDF5( file_id, "/slab2_imag", nx_total, slab2_ny, nz_total, slab2_imag  );
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+  // // NOTE: Transposing X-Z may improve performance
+  // if( procID == 0 ) printf(" Getting 1D FFTs...\n" );
+  // // int idx_fft;
+  // for( j=0; j<slab2_ny; j++ ){
+  //   for( i=0; i<nx_total; i++ ){
+  //     for( k=0; k<nz_total; k++ ){
+  //       idx_fft = k;
+  //       idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
+  //       fft_in_2[idx_fft][0] = slab2_real[idx_slab];
+  //       fft_in_2[idx_fft][1] = slab2_imag[idx_slab];;
+  //     }
+  //     fftw_execute( plan_2_fwd );
+  //     for( k=0; k<nz_total; k++ ){
+  //       idx_fft = k;
+  //       idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
+  //       slab2_real[idx_slab] = fft_out_2[idx_fft][0];
+  //       slab2_imag[idx_slab] = fft_out_2[idx_fft][1];
+  //     }
+  //   }
+  // }
 
   // NOTE: Transposing X-Z may improve performance
   if( procID == 0 ) printf(" Getting 1D FFTs...\n" );
@@ -374,20 +411,27 @@ int main(int argc, char **argv){
   for( j=0; j<slab2_ny; j++ ){
     for( i=0; i<nx_total; i++ ){
       for( k=0; k<nz_total; k++ ){
-        idx_fft = k;
+        idx_fft = k + j*nx_total + i*nx_total*slab2_ny;
         idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-        fft_in_2[idx_fft][0] = slab2_real[idx_slab];
-        fft_in_2[idx_fft][1] = slab2_imag[idx_slab];;
-      }
-      fftw_execute( plan_2_fwd );
-      for( k=0; k<nz_total; k++ ){
-        idx_fft = k;
-        idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-        slab2_real[idx_slab] = fft_out_2[idx_fft][0];
-        slab2_imag[idx_slab] = fft_out_2[idx_fft][1];
+        fft_in_2_many[idx_fft][0] = slab2_real[idx_slab];
+        fft_in_2_many[idx_fft][1] = slab2_imag[idx_slab];;
       }
     }
   }
+  fftw_execute( plan_2_fwd_many );
+  for( j=0; j<slab2_ny; j++ ){
+    for( i=0; i<nx_total; i++ ){
+      for( k=0; k<nz_total; k++ ){
+        idx_fft = k + j*nx_total + i*nx_total*slab2_ny;
+        idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
+        slab2_real[idx_slab] = fft_out_2_many[idx_fft][0];
+        slab2_imag[idx_slab] = fft_out_2_many[idx_fft][1];
+      }
+    }
+  }
+
+
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   // Divide_by_K2
@@ -428,8 +472,8 @@ int main(int argc, char **argv){
       }
     }
   }
-  if( saveData ) Write_Data_HDF5( file_id, "/slab3_real", nx_total, ny_total, slab_nz, slab_real  );
-  if( saveData ) Write_Data_HDF5( file_id, "/slab3_imag", nx_total, ny_total, slab_nz, slab_imag  );
+  // if( saveData ) Write_Data_HDF5( file_id, "/slab3_real", nx_total, ny_total, slab_nz, slab_real  );
+  // if( saveData ) Write_Data_HDF5( file_id, "/slab3_imag", nx_total, ny_total, slab_nz, slab_imag  );
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   // Compute inverse 2D FFTs
@@ -437,7 +481,7 @@ int main(int argc, char **argv){
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
   // order the data to in slab
-  if( procID == 0 ) printf(" Sending back first slab\n" );
+  if( procID == 0 ) printf(" Sending back first slab: real\n" );
   for ( int np=0; np<nProcess_slab; np++ ){
     pId_temp = slab_id*nProcess_slab + np;
     get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
@@ -456,9 +500,12 @@ int main(int argc, char **argv){
   }
 
 
+
+
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   // write original data
-  if( procID == 0 ) printf(" Writing original data\n" );
+  if( procID == 0 ) printf(" Writing original data: real\n" );
   for ( int np=0; np<nProcess_slab; np++ ){
     pId_temp = slab_id*nProcess_slab + np;
     get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
@@ -473,7 +520,47 @@ int main(int argc, char **argv){
       }
     }
   }
+
   if( saveData ) Write_Data_HDF5( file_id, "/slab4_real", nx_local, ny_local, nz_local, in_re  );
+
+
+  // order the data to in slab
+  if( procID == 0 ) printf(" Sending back first slab: imag\n" );
+  for ( int np=0; np<nProcess_slab; np++ ){
+    pId_temp = slab_id*nProcess_slab + np;
+    get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
+    slab_x_start = pId_x_temp * nx_local;
+    slab_y_start = pId_y_temp * ny_local;
+    for( k=0; k<slab_nz; k++){
+      for( j=0; j<ny_local; j++){
+        for(i=0; i<nx_local; i++ ){
+          idx = i + j*nx_local + k*nx_local*ny_local;
+          idx_slab = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
+          slab_local[idx] = slab_imag[idx_slab];
+        }
+      }
+    }
+    MPI_Gather( slab_local, send_size, MPI_DOUBLE, slab_gather, send_size, MPI_DOUBLE, np, slab_comm );
+  }
+
+  // write original data
+  if( procID == 0 ) printf(" Writing original data: imag\n" );
+  for ( int np=0; np<nProcess_slab; np++ ){
+    pId_temp = slab_id*nProcess_slab + np;
+    get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
+    slab_z_start = np * slab_nz;
+    for( k=0; k<slab_nz; k++){
+      for( j=0; j<ny_local; j++){
+        for(i=0; i<nx_local; i++ ){
+          idx_gather = np*send_size + i + j*nx_local + k*nx_local*ny_local;
+          idx_data = i + j*nx_local + (slab_z_start+k)*nx_local*ny_local;
+          in_re[idx_data] = slab_gather[idx_gather];
+        }
+      }
+    }
+  }
+  if( saveData ) Write_Data_HDF5( file_id, "/slab4_imag", nx_local, ny_local, nz_local, in_re  );
+
 
 
   time_end = MPI_Wtime();
