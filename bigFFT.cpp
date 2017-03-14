@@ -372,9 +372,14 @@ int main(int argc, char **argv){
       for( j=0; j<slab2_ny; j++){
         for(i=0; i<nx_total; i++ ){
           idx_gather = np*send_size_2 + 2*(i + j*nx_total + k*nx_total*slab2_ny);
-          idx_data   = i + j*nx_total + (k+slab_z_start)*nx_total*slab2_ny;
-          slab2_real[idx_data] = slab2_gather[idx_gather];
-          slab2_imag[idx_data] = slab2_gather[idx_gather+1];
+          // idx_data   = i + j*nx_total + (k+slab_z_start)*nx_total*slab2_ny;
+          // slab2_real[idx_data] = slab2_gather[idx_gather];
+          // slab2_imag[idx_data] = slab2_gather[idx_gather+1];
+          // AVOID TRANSVERSE
+          idx_fft = (k+slab_z_start) + j*nx_total + i*nx_total*slab2_ny;
+          // idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
+          fft_in_2_many[idx_fft][0] = slab2_gather[idx_gather];
+          fft_in_2_many[idx_fft][1] = slab2_gather[idx_gather+1];
         }
       }
     }
@@ -408,16 +413,16 @@ int main(int argc, char **argv){
   // NOTE: Transposing X-Z may improve performance
   if( procID == 0 ) printf(" Getting 1D FFTs...\n" );
   // int idx_fft;
-  for( j=0; j<slab2_ny; j++ ){
-    for( i=0; i<nx_total; i++ ){
-      for( k=0; k<nz_total; k++ ){
-        idx_fft = k + j*nx_total + i*nx_total*slab2_ny;
-        idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-        fft_in_2_many[idx_fft][0] = slab2_real[idx_slab];
-        fft_in_2_many[idx_fft][1] = slab2_imag[idx_slab];;
-      }
-    }
-  }
+  // for( j=0; j<slab2_ny; j++ ){
+  //   for( i=0; i<nx_total; i++ ){
+  //     for( k=0; k<nz_total; k++ ){
+  //       idx_fft = k + j*nx_total + i*nx_total*slab2_ny;
+  //       idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
+  //       fft_in_2_many[idx_fft][0] = slab2_real[idx_slab];
+  //       fft_in_2_many[idx_fft][1] = slab2_imag[idx_slab];;
+  //     }
+  //   }
+  // }
   fftw_execute( plan_2_fwd_many );
   for( j=0; j<slab2_ny; j++ ){
     for( i=0; i<nx_total; i++ ){
