@@ -270,7 +270,7 @@ int main(int argc, char **argv){
   slab_imag = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
   int pId_temp, pId_z_temp, pId_y_temp, pId_x_temp;
   int slab_x_start, slab_y_start, slab_z_start; // slab_x_end, slab_y_end;
-  int idx_gather, idx_data;
+  int idx_gather, idx_data, idx_fft;
   for ( int np=0; np<nProcess_slab; np++ ){
     pId_temp = slab_id*nProcess_slab + np;
     get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
@@ -281,7 +281,11 @@ int main(int argc, char **argv){
         for(i=0; i<nx_local; i++ ){
           idx_gather = np*send_size + i + j*nx_local + k*nx_local*ny_local;
           idx_data   = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
-          slab_real[idx_data] = slab_gather[idx_gather];
+          // slab_real[idx_data] = slab_gather[idx_gather];
+          idx_fft  = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
+          // idx_slab = i + j*nx_total + k*nx_total*ny_total;
+          fft_in_1_many[idx_fft][0] = slab_gather[idx_gather];
+          fft_in_1_many[idx_fft][1] = 0;
         }
       }
     }
@@ -290,7 +294,6 @@ int main(int argc, char **argv){
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
   if( procID == 0 ) printf(" Getting 2D FFTs...\n" );
-  int idx_fft;
   // for( k=0; k<slab_nz; k++ ){
   //   for( j=0; j<ny_total; j++ ){
   //     for( i=0; i<nx_total; i++ ){
@@ -311,27 +314,27 @@ int main(int argc, char **argv){
   //   }
   // }
 
-  for( k=0; k<slab_nz; k++ ){
-    for( j=0; j<ny_total; j++ ){
-      for( i=0; i<nx_total; i++ ){
-        idx_fft  = i + j*nx_total + k*nx_total*ny_total;
-        idx_slab = i + j*nx_total + k*nx_total*ny_total;
-        fft_in_1_many[idx_fft][0] = slab_real[idx_slab];
-        fft_in_1_many[idx_fft][1] = 0;
-      }
-    }
-  }
+  // for( k=0; k<slab_nz; k++ ){
+  //   for( j=0; j<ny_total; j++ ){
+  //     for( i=0; i<nx_total; i++ ){
+  //       idx_fft  = i + j*nx_total + k*nx_total*ny_total;
+  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
+  //       fft_in_1_many[idx_fft][0] = slab_real[idx_slab];
+  //       fft_in_1_many[idx_fft][1] = 0;
+  //     }
+  //   }
+  // }
   fftw_execute( plan_1_fwd_many );
-  for( k=0; k<slab_nz; k++ ){
-    for( j=0; j<ny_total; j++ ){
-      for( i=0; i<nx_total; i++ ){
-        idx_fft  = i + j*nx_total + k*nx_total*ny_total;
-        idx_slab = i + j*nx_total + k*nx_total*ny_total;
-        slab_real[idx_slab] = fft_out_1_many[idx_fft][0];
-        slab_imag[idx_slab] = fft_out_1_many[idx_fft][1];
-      }
-    }
-  }
+  // for( k=0; k<slab_nz; k++ ){
+  //   for( j=0; j<ny_total; j++ ){
+  //     for( i=0; i<nx_total; i++ ){
+  //       idx_fft  = i + j*nx_total + k*nx_total*ny_total;
+  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
+  //       slab_real[idx_slab] = fft_out_1_many[idx_fft][0];
+  //       slab_imag[idx_slab] = fft_out_1_many[idx_fft][1];
+  //     }
+  //   }
+  // }
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
   if( procID == 0 ) printf("Sending to second slab (complex)\n" );
@@ -348,8 +351,11 @@ int main(int argc, char **argv){
         for(i=0; i<nx_total; i++ ){
           idx = i + (j+slab_y_start)*nx_total + k*nx_total*ny_total;
           idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-          slab2_local[2*idx_slab] = slab_real[idx];
-          slab2_local[2*idx_slab+1] = slab_imag[idx];
+          idx_fft = idx;
+          // slab2_local[2*idx_slab] = slab_real[idx];
+          // slab2_local[2*idx_slab+1] = slab_imag[idx];
+          slab2_local[2*idx_slab] = fft_out_1_many[idx_fft][0];
+          slab2_local[2*idx_slab+1] = fft_out_1_many[idx_fft][1];
         }
       }
     }
@@ -424,27 +430,21 @@ int main(int argc, char **argv){
   //   }
   // }
   fftw_execute( plan_2_fwd_many );
-  for( j=0; j<slab2_ny; j++ ){
-    for( i=0; i<nx_total; i++ ){
-      for( k=0; k<nz_total; k++ ){
-        idx_fft = k + j*nx_total + i*nx_total*slab2_ny;
-        idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-        slab2_real[idx_slab] = fft_out_2_many[idx_fft][0];
-        slab2_imag[idx_slab] = fft_out_2_many[idx_fft][1];
-      }
-    }
-  }
-
-
-
+  // for( j=0; j<slab2_ny; j++ ){
+  //   for( i=0; i<nx_total; i++ ){
+  //     for( k=0; k<nz_total; k++ ){
+  //       idx_fft = k + j*nx_total + i*nx_total*slab2_ny;
+  //       idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
+  //       slab2_real[idx_slab] = fft_out_2_many[idx_fft][0];
+  //       slab2_imag[idx_slab] = fft_out_2_many[idx_fft][1];
+  //     }
+  //   }
+  // }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   // Divide_by_K2
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
   // Compte inverse 1D FFTs
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   if( procID == 0 ) printf("Sending back second slab (complex)\n" );
   for ( int np=0; np<nproc; np++ ){
@@ -452,10 +452,13 @@ int main(int argc, char **argv){
     for( k=0; k<slab_nz; k++){
       for( j=0; j<slab2_ny; j++){
         for(i=0; i<nx_total; i++ ){
-          idx = i + j*nx_total + (k+slab_z_start)*nx_total*slab2_ny;
+          // idx = i + j*nx_total + (k+slab_z_start)*nx_total*slab2_ny;
           idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-          slab2_local[2*idx_slab] = slab2_real[idx];
-          slab2_local[2*idx_slab+1] = slab2_imag[idx];
+          // slab2_local[2*idx_slab] = slab2_real[idx];
+          // slab2_local[2*idx_slab+1] = slab2_imag[idx];
+          idx_fft = (k+slab_z_start) + j*nx_total + i*nx_total*slab2_ny;
+          slab2_local[2*idx_slab] = fft_out_2_many[idx_fft][0];
+          slab2_local[2*idx_slab+1] = fft_out_2_many[idx_fft][1];
         }
       }
     }
