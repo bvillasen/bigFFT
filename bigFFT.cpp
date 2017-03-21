@@ -3,6 +3,8 @@
 #include <math.h>
 #include <string.h>
 #include <sstream>
+#include <iostream>
+#include <fstream>
 #include <hdf5.h>
 #include <mpi.h>
 #include <fftw3.h>
@@ -87,7 +89,7 @@ int main(int argc, char **argv){
 
 
   string fileName = "0";
-  string outDir = "/home/bruno/Desktop/data/bigFFT_output/";
+  string outDir = "/raid/bruno/data/bigFFT_output/";
   // create the filename
   ostringstream outFileName;
   outFileName << outDir << fileName << ".h5." << procID;
@@ -97,10 +99,19 @@ int main(int argc, char **argv){
   int saveData = atoi( argv[1] );
   if (saveData && procID==0 ) printf("SAVE DATA: %s \n", outFileName.str().c_str() );
 
+  ofstream myfile;
+  if ( procID == 0 ){
+    myfile.open("run_results.log", ios::app);
+    // myfile << "Writing this to a file.\n";
+    // myfile.close();
+  }
+
+
+
   // Create a new file collectively
   hid_t   file_id;
   herr_t  status;
-  file_id = H5Fcreate(outFileName.str().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+  if( saveData )file_id = H5Fcreate(outFileName.str().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
 
 
   double x_min_total, x_min_local, y_min_total, y_min_local, z_min_total, z_min_local;
@@ -134,7 +145,7 @@ int main(int argc, char **argv){
     usleep(1e5);
   }
 
-  Write_Header_HDF5( file_id, nx_total, ny_total, nz_total, nx_local, ny_local, nz_local );
+  if( saveData )Write_Header_HDF5( file_id, nx_total, ny_total, nz_total, nx_local, ny_local, nz_local );
 
 
   double *in_re ;
@@ -196,10 +207,12 @@ int main(int argc, char **argv){
   if ( error != 0 ) { if( procID == 0 ) printf( "\nFFTW_openMP initialized\n" ); }
   else printf("[pID: %d] ERROR: FFTW initialize error ", procID );
   int nThreads = atoi( argv[3]);
+  // const int nThreads = 2;
   omp_set_num_threads( nThreads );
   fftw_plan_with_nthreads( nThreads );
   if( procID == 0 ) printf("FFT Threads: %d \n", nThreads );
   if( procID == 0 ) printf("Making 2D FFTW plan\n" );
+  printf("Making 2D FFTW plan\n" );
   fftw_complex *fft_in_1, *fft_out_1;
   fftw_complex *fft_in_1_many, *fft_out_1_many;
   fftw_plan plan_1_fwd, plan_1_bck;
@@ -209,8 +222,9 @@ int main(int argc, char **argv){
   fft_in_1_many  = (fftw_complex*) fftw_malloc( (nz_total/nproc)* ny_total*nx_total*sizeof(fftw_complex) );
   fft_out_1_many = (fftw_complex*) fftw_malloc( (nz_total/nproc)* ny_total*nx_total*sizeof(fftw_complex) );
 
-  plan_1_fwd = fftw_plan_dft_2d( ny_total, nx_total, fft_in_1, fft_out_1, FFTW_FORWARD, FFTW_MEASURE);
-  plan_1_bck = fftw_plan_dft_2d( ny_total, nx_total, fft_in_1, fft_out_1, FFTW_BACKWARD, FFTW_MEASURE);
+  // NOTE: THIS LINE BREAKS IN TITAN
+  // plan_1_fwd = fftw_plan_dft_2d( ny_total, nx_total, fft_in_1, fft_out_1, FFTW_FORWARD, FFTW_MEASURE);
+  // plan_1_bck = fftw_plan_dft_2d( ny_total, nx_total, fft_in_1, fft_out_1, FFTW_BACKWARD, FFTW_MEASURE);
   int dim_FFT_2d[] = {ny_total, nx_total};
   plan_1_fwd_many = fftw_plan_many_dft( 2, dim_FFT_2d, nz_total/nproc,
                        fft_in_1_many, dim_FFT_2d, 1, nx_total*ny_total,
@@ -226,8 +240,8 @@ int main(int argc, char **argv){
   fft_out_2 = (fftw_complex*) fftw_malloc( nz_total *sizeof(fftw_complex) );
   fft_in_2_many  = (fftw_complex*) fftw_malloc( nx_total*(ny_total/nproc)*nz_total *sizeof(fftw_complex) );
   fft_out_2_many = (fftw_complex*) fftw_malloc( nx_total*(ny_total/nproc)*nz_total *sizeof(fftw_complex) );
-  plan_2_fwd = fftw_plan_dft_1d( nz_total, fft_in_2, fft_out_2, FFTW_FORWARD, FFTW_MEASURE);
-  plan_2_bck = fftw_plan_dft_1d( nz_total, fft_in_2, fft_out_2, FFTW_BACKWARD, FFTW_MEASURE);
+  // plan_2_fwd = fftw_plan_dft_1d( nz_total, fft_in_2, fft_out_2, FFTW_FORWARD, FFTW_MEASURE);
+  // plan_2_bck = fftw_plan_dft_1d( nz_total, fft_in_2, fft_out_2, FFTW_BACKWARD, FFTW_MEASURE);
   int dim_FFT_1d[] = {nz_total};
   plan_2_fwd_many = fftw_plan_many_dft( 1, dim_FFT_1d, (ny_total/nproc)*nx_total,
                        fft_in_2_many, dim_FFT_1d, 1, nz_total,
@@ -236,348 +250,278 @@ int main(int argc, char **argv){
 
 
 
-  double time_start, time_end;
-  time_start = MPI_Wtime();
+  double time_start, time_end, time_total, time_fft;
+  time_total = 0;
+  int nRuns = atoi(argv[4]);
+  for( int run=0; run<nRuns; run++){
+    time_start = MPI_Wtime();
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  if( procID == 0 ) printf("Sending to first slab\n" );
-  int slab_nz = nz_total/nproc;
-  double *slab_gather;
-  double *slab_local;
-  int send_size = slab_nz * nx_local * ny_local;
-  slab_gather = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
-  slab_local  = (double *) malloc( send_size *sizeof(double) );
-  int z_start, z_end;
-  int idx_slab, idx;
-  for( int np=0; np<nProcess_slab; np++ ){
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<ny_local; j++){
-        for(i=0; i<nx_local; i++ ){
-          idx = i + j*nx_local + (k+np*slab_nz)*nx_local*ny_local;
-          idx_slab = i + j*nx_local + k*nx_local*ny_local;
-          slab_local[idx_slab] = in_re[idx];
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    if( procID == 0 ) printf("Sending to first slab\n" );
+    int slab_nz = nz_total/nproc;
+    double *slab_gather;
+    double *slab_local;
+    int send_size = slab_nz * nx_local * ny_local;
+    slab_gather = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
+    slab_local  = (double *) malloc( send_size *sizeof(double) );
+    int z_start, z_end;
+    int idx_slab, idx;
+    for( int np=0; np<nProcess_slab; np++ ){
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<ny_local; j++){
+          for(i=0; i<nx_local; i++ ){
+            idx = i + j*nx_local + (k+np*slab_nz)*nx_local*ny_local;
+            idx_slab = i + j*nx_local + k*nx_local*ny_local;
+            slab_local[idx_slab] = in_re[idx];
+          }
+        }
+      }
+      MPI_Gather( slab_local, send_size, MPI_DOUBLE, slab_gather, send_size, MPI_DOUBLE, np, slab_comm );
+    }
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    // order the data to in slab
+    if( procID == 0 ) printf(" Writing first slab\n" );
+    double *slab_real, *slab_imag;
+    slab_real = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
+    slab_imag = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
+    int pId_temp, pId_z_temp, pId_y_temp, pId_x_temp;
+    int slab_x_start, slab_y_start, slab_z_start; // slab_x_end, slab_y_end;
+    int idx_gather, idx_data, idx_fft;
+    for ( int np=0; np<nProcess_slab; np++ ){
+      pId_temp = slab_id*nProcess_slab + np;
+      get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
+      slab_x_start = pId_x_temp * nx_local;
+      slab_y_start = pId_y_temp * ny_local;
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<ny_local; j++){
+          for(i=0; i<nx_local; i++ ){
+            idx_gather = np*send_size + i + j*nx_local + k*nx_local*ny_local;
+            idx_data   = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
+            // slab_real[idx_data] = slab_gather[idx_gather];
+            idx_fft  = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
+            // idx_slab = i + j*nx_total + k*nx_total*ny_total;
+            fft_in_1_many[idx_fft][0] = slab_gather[idx_gather];
+            fft_in_1_many[idx_fft][1] = 0;
+          }
         }
       }
     }
-    MPI_Gather( slab_local, send_size, MPI_DOUBLE, slab_gather, send_size, MPI_DOUBLE, np, slab_comm );
-  }
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // if( saveData ) Write_Data_HDF5( file_id, "/slab", nx_total, ny_total, slab_nz, slab_real  );
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-  // order the data to in slab
-  if( procID == 0 ) printf(" Writing first slab\n" );
-  double *slab_real, *slab_imag;
-  slab_real = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
-  slab_imag = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
-  int pId_temp, pId_z_temp, pId_y_temp, pId_x_temp;
-  int slab_x_start, slab_y_start, slab_z_start; // slab_x_end, slab_y_end;
-  int idx_gather, idx_data, idx_fft;
-  for ( int np=0; np<nProcess_slab; np++ ){
-    pId_temp = slab_id*nProcess_slab + np;
-    get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
-    slab_x_start = pId_x_temp * nx_local;
-    slab_y_start = pId_y_temp * ny_local;
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<ny_local; j++){
-        for(i=0; i<nx_local; i++ ){
-          idx_gather = np*send_size + i + j*nx_local + k*nx_local*ny_local;
-          idx_data   = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
-          // slab_real[idx_data] = slab_gather[idx_gather];
-          idx_fft  = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
-          // idx_slab = i + j*nx_total + k*nx_total*ny_total;
-          fft_in_1_many[idx_fft][0] = slab_gather[idx_gather];
-          fft_in_1_many[idx_fft][1] = 0;
+    if( procID == 0 ) printf(" Getting 2D FFTs...\n" );
+    fftw_execute( plan_1_fwd_many );
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    if( procID == 0 ) printf("Sending to second slab (complex)\n" );
+    double *slab2_gather;
+    double *slab2_local;
+    int slab2_ny = ny_total/nproc;
+    int send_size_2 = 2 * slab_nz * nx_total * slab2_ny;
+    slab2_gather = (double *) malloc( nproc * send_size_2 *sizeof(double) );
+    slab2_local  = (double *) malloc( send_size_2 *sizeof(double) );
+    for ( int np=0; np<nproc; np++ ){
+      slab_y_start = np*slab2_ny;
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<slab2_ny; j++){
+          for(i=0; i<nx_total; i++ ){
+            idx = i + (j+slab_y_start)*nx_total + k*nx_total*ny_total;
+            idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
+            idx_fft = idx;
+            // slab2_local[2*idx_slab] = slab_real[idx];
+            // slab2_local[2*idx_slab+1] = slab_imag[idx];
+            slab2_local[2*idx_slab] = fft_out_1_many[idx_fft][0];
+            slab2_local[2*idx_slab+1] = fft_out_1_many[idx_fft][1];
+          }
+        }
+      }
+      MPI_Gather( slab2_local, send_size_2, MPI_DOUBLE, slab2_gather, send_size_2, MPI_DOUBLE, np, world );
+    }
+
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    // order the data to in slab
+    if( procID == 0 ) printf(" Writing second slab\n" );
+    double *slab2_real, *slab2_imag;
+    slab2_real = (double *) malloc( nproc * send_size_2 / 2 *sizeof(double) );
+    slab2_imag = (double *) malloc( nproc * send_size_2 / 2 *sizeof(double) );
+    // int slab_z_start;
+    for ( int np=0; np<nproc; np++ ){
+      pId_temp = np;
+      get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
+      slab_z_start = np*slab_nz;
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<slab2_ny; j++){
+          for(i=0; i<nx_total; i++ ){
+            idx_gather = np*send_size_2 + 2*(i + j*nx_total + k*nx_total*slab2_ny);
+            // idx_data   = i + j*nx_total + (k+slab_z_start)*nx_total*slab2_ny;
+            // slab2_real[idx_data] = slab2_gather[idx_gather];
+            // slab2_imag[idx_data] = slab2_gather[idx_gather+1];
+            // AVOID TRANSVERSE
+            idx_fft = (k+slab_z_start) + j*nx_total + i*nx_total*slab2_ny;
+            // idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
+            fft_in_2_many[idx_fft][0] = slab2_gather[idx_gather];
+            fft_in_2_many[idx_fft][1] = slab2_gather[idx_gather+1];
+          }
         }
       }
     }
-  }
-  // if( saveData ) Write_Data_HDF5( file_id, "/slab", nx_total, ny_total, slab_nz, slab_real  );
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // if( saveData ) Write_Data_HDF5( file_id, "/slab2_real", nx_total, slab2_ny, nz_total, slab2_real  );
+    // if( saveData ) Write_Data_HDF5( file_id, "/slab2_imag", nx_total, slab2_ny, nz_total, slab2_imag  );
 
-  if( procID == 0 ) printf(" Getting 2D FFTs...\n" );
-  // for( k=0; k<slab_nz; k++ ){
-  //   for( j=0; j<ny_total; j++ ){
-  //     for( i=0; i<nx_total; i++ ){
-  //       idx_fft = i + j*nx_total;
-  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
-  //       fft_in_1[idx_fft][0] = slab_real[idx_slab];
-  //       fft_in_1[idx_fft][1] = 0;
-  //     }
-  //   }
-  //   fftw_execute( plan_1_fwd );
-  //   for( j=0; j<ny_total; j++ ){
-  //     for( i=0; i<nx_total; i++ ){
-  //       idx_fft = i + j*nx_total;
-  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
-  //       slab_real[idx_slab] = fft_out_1[idx_fft][0];
-  //       slab_imag[idx_slab] = fft_out_1[idx_fft][1];
-  //     }
-  //   }
-  // }
+  //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-  // for( k=0; k<slab_nz; k++ ){
-  //   for( j=0; j<ny_total; j++ ){
-  //     for( i=0; i<nx_total; i++ ){
-  //       idx_fft  = i + j*nx_total + k*nx_total*ny_total;
-  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
-  //       fft_in_1_many[idx_fft][0] = slab_real[idx_slab];
-  //       fft_in_1_many[idx_fft][1] = 0;
-  //     }
-  //   }
-  // }
-  fftw_execute( plan_1_fwd_many );
-  // for( k=0; k<slab_nz; k++ ){
-  //   for( j=0; j<ny_total; j++ ){
-  //     for( i=0; i<nx_total; i++ ){
-  //       idx_fft  = i + j*nx_total + k*nx_total*ny_total;
-  //       idx_slab = i + j*nx_total + k*nx_total*ny_total;
-  //       slab_real[idx_slab] = fft_out_1_many[idx_fft][0];
-  //       slab_imag[idx_slab] = fft_out_1_many[idx_fft][1];
-  //     }
-  //   }
-  // }
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // NOTE: Transposing X-Z may improve performance
+    if( procID == 0 ) printf(" Getting 1D FFTs...\n" );
+    fftw_execute( plan_2_fwd_many );
 
-  if( procID == 0 ) printf("Sending to second slab (complex)\n" );
-  double *slab2_gather;
-  double *slab2_local;
-  int slab2_ny = ny_total/nproc;
-  int send_size_2 = 2 * slab_nz * nx_total * slab2_ny;
-  slab2_gather = (double *) malloc( nproc * send_size_2 *sizeof(double) );
-  slab2_local  = (double *) malloc( send_size_2 *sizeof(double) );
-  for ( int np=0; np<nproc; np++ ){
-    slab_y_start = np*slab2_ny;
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<slab2_ny; j++){
-        for(i=0; i<nx_total; i++ ){
-          idx = i + (j+slab_y_start)*nx_total + k*nx_total*ny_total;
-          idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-          idx_fft = idx;
-          // slab2_local[2*idx_slab] = slab_real[idx];
-          // slab2_local[2*idx_slab+1] = slab_imag[idx];
-          slab2_local[2*idx_slab] = fft_out_1_many[idx_fft][0];
-          slab2_local[2*idx_slab+1] = fft_out_1_many[idx_fft][1];
+
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Divide_by_K2
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Compte inverse 1D FFTs
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    if( procID == 0 ) printf("Sending back second slab (complex)\n" );
+    for ( int np=0; np<nproc; np++ ){
+      slab_z_start = np*slab_nz;
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<slab2_ny; j++){
+          for(i=0; i<nx_total; i++ ){
+            // idx = i + j*nx_total + (k+slab_z_start)*nx_total*slab2_ny;
+            idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
+            // slab2_local[2*idx_slab] = slab2_real[idx];
+            // slab2_local[2*idx_slab+1] = slab2_imag[idx];
+            idx_fft = (k+slab_z_start) + j*nx_total + i*nx_total*slab2_ny;
+            slab2_local[2*idx_slab] = fft_out_2_many[idx_fft][0];
+            slab2_local[2*idx_slab+1] = fft_out_2_many[idx_fft][1];
+          }
+        }
+      }
+      MPI_Gather( slab2_local, send_size_2, MPI_DOUBLE, slab2_gather, send_size_2, MPI_DOUBLE, np, world );
+    }
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // order the data to in slab
+    if( procID == 0 ) printf(" Writing first slab\n" );
+    for ( int np=0; np<nproc; np++ ){
+      slab_y_start = np * slab2_ny;
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<slab2_ny; j++){
+          for(i=0; i<nx_total; i++ ){
+            idx_gather = np*send_size_2 + 2*( i + j*nx_total + k*nx_total*slab2_ny );
+            idx_data   = i + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
+            slab_real[idx_data] = slab2_gather[idx_gather];
+            slab_imag[idx_data] = slab2_gather[idx_gather+1];
+          }
         }
       }
     }
-    MPI_Gather( slab2_local, send_size_2, MPI_DOUBLE, slab2_gather, send_size_2, MPI_DOUBLE, np, world );
-  }
+    // if( saveData ) Write_Data_HDF5( file_id, "/slab3_real", nx_total, ny_total, slab_nz, slab_real  );
+    // if( saveData ) Write_Data_HDF5( file_id, "/slab3_imag", nx_total, ny_total, slab_nz, slab_imag  );
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Compute inverse 2D FFTs
 
-  // order the data to in slab
-  if( procID == 0 ) printf(" Writing second slab\n" );
-  double *slab2_real, *slab2_imag;
-  slab2_real = (double *) malloc( nproc * send_size_2 / 2 *sizeof(double) );
-  slab2_imag = (double *) malloc( nproc * send_size_2 / 2 *sizeof(double) );
-  // int slab_z_start;
-  for ( int np=0; np<nproc; np++ ){
-    pId_temp = np;
-    get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
-    slab_z_start = np*slab_nz;
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<slab2_ny; j++){
-        for(i=0; i<nx_total; i++ ){
-          idx_gather = np*send_size_2 + 2*(i + j*nx_total + k*nx_total*slab2_ny);
-          // idx_data   = i + j*nx_total + (k+slab_z_start)*nx_total*slab2_ny;
-          // slab2_real[idx_data] = slab2_gather[idx_gather];
-          // slab2_imag[idx_data] = slab2_gather[idx_gather+1];
-          // AVOID TRANSVERSE
-          idx_fft = (k+slab_z_start) + j*nx_total + i*nx_total*slab2_ny;
-          // idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-          fft_in_2_many[idx_fft][0] = slab2_gather[idx_gather];
-          fft_in_2_many[idx_fft][1] = slab2_gather[idx_gather+1];
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    // order the data to in slab
+    if( procID == 0 ) printf(" Sending back first slab: real\n" );
+    for ( int np=0; np<nProcess_slab; np++ ){
+      pId_temp = slab_id*nProcess_slab + np;
+      get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
+      slab_x_start = pId_x_temp * nx_local;
+      slab_y_start = pId_y_temp * ny_local;
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<ny_local; j++){
+          for(i=0; i<nx_local; i++ ){
+            idx = i + j*nx_local + k*nx_local*ny_local;
+            idx_slab = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
+            slab_local[idx] = slab_real[idx_slab];
+          }
+        }
+      }
+      MPI_Gather( slab_local, send_size, MPI_DOUBLE, slab_gather, send_size, MPI_DOUBLE, np, slab_comm );
+    }
+
+
+
+
+
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // write original data
+    if( procID == 0 ) printf(" Writing original data: real\n" );
+    for ( int np=0; np<nProcess_slab; np++ ){
+      pId_temp = slab_id*nProcess_slab + np;
+      get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
+      slab_z_start = np * slab_nz;
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<ny_local; j++){
+          for(i=0; i<nx_local; i++ ){
+            idx_gather = np*send_size + i + j*nx_local + k*nx_local*ny_local;
+            idx_data = i + j*nx_local + (slab_z_start+k)*nx_local*ny_local;
+            in_re[idx_data] = slab_gather[idx_gather];
+          }
         }
       }
     }
-  }
-  // if( saveData ) Write_Data_HDF5( file_id, "/slab2_real", nx_total, slab2_ny, nz_total, slab2_real  );
-  // if( saveData ) Write_Data_HDF5( file_id, "/slab2_imag", nx_total, slab2_ny, nz_total, slab2_imag  );
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    if( saveData ) Write_Data_HDF5( file_id, "/slab4_real", nx_local, ny_local, nz_local, in_re  );
 
-  // // NOTE: Transposing X-Z may improve performance
-  // if( procID == 0 ) printf(" Getting 1D FFTs...\n" );
-  // // int idx_fft;
-  // for( j=0; j<slab2_ny; j++ ){
-  //   for( i=0; i<nx_total; i++ ){
-  //     for( k=0; k<nz_total; k++ ){
-  //       idx_fft = k;
-  //       idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-  //       fft_in_2[idx_fft][0] = slab2_real[idx_slab];
-  //       fft_in_2[idx_fft][1] = slab2_imag[idx_slab];;
-  //     }
-  //     fftw_execute( plan_2_fwd );
-  //     for( k=0; k<nz_total; k++ ){
-  //       idx_fft = k;
-  //       idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-  //       slab2_real[idx_slab] = fft_out_2[idx_fft][0];
-  //       slab2_imag[idx_slab] = fft_out_2[idx_fft][1];
-  //     }
-  //   }
-  // }
 
-  // NOTE: Transposing X-Z may improve performance
-  if( procID == 0 ) printf(" Getting 1D FFTs...\n" );
-  // int idx_fft;
-  // for( j=0; j<slab2_ny; j++ ){
-  //   for( i=0; i<nx_total; i++ ){
-  //     for( k=0; k<nz_total; k++ ){
-  //       idx_fft = k + j*nx_total + i*nx_total*slab2_ny;
-  //       idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-  //       fft_in_2_many[idx_fft][0] = slab2_real[idx_slab];
-  //       fft_in_2_many[idx_fft][1] = slab2_imag[idx_slab];;
-  //     }
-  //   }
-  // }
-  fftw_execute( plan_2_fwd_many );
-  // for( j=0; j<slab2_ny; j++ ){
-  //   for( i=0; i<nx_total; i++ ){
-  //     for( k=0; k<nz_total; k++ ){
-  //       idx_fft = k + j*nx_total + i*nx_total*slab2_ny;
-  //       idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-  //       slab2_real[idx_slab] = fft_out_2_many[idx_fft][0];
-  //       slab2_imag[idx_slab] = fft_out_2_many[idx_fft][1];
-  //     }
-  //   }
-  // }
+    // order the data to in slab
+    if( procID == 0 ) printf(" Sending back first slab: imag\n" );
+    for ( int np=0; np<nProcess_slab; np++ ){
+      pId_temp = slab_id*nProcess_slab + np;
+      get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
+      slab_x_start = pId_x_temp * nx_local;
+      slab_y_start = pId_y_temp * ny_local;
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<ny_local; j++){
+          for(i=0; i<nx_local; i++ ){
+            idx = i + j*nx_local + k*nx_local*ny_local;
+            idx_slab = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
+            slab_local[idx] = slab_imag[idx_slab];
+          }
+        }
+      }
+      MPI_Gather( slab_local, send_size, MPI_DOUBLE, slab_gather, send_size, MPI_DOUBLE, np, slab_comm );
+    }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  // Divide_by_K2
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  // Compte inverse 1D FFTs
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  if( procID == 0 ) printf("Sending back second slab (complex)\n" );
-  for ( int np=0; np<nproc; np++ ){
-    slab_z_start = np*slab_nz;
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<slab2_ny; j++){
-        for(i=0; i<nx_total; i++ ){
-          // idx = i + j*nx_total + (k+slab_z_start)*nx_total*slab2_ny;
-          idx_slab = i + j*nx_total + k*nx_total*slab2_ny;
-          // slab2_local[2*idx_slab] = slab2_real[idx];
-          // slab2_local[2*idx_slab+1] = slab2_imag[idx];
-          idx_fft = (k+slab_z_start) + j*nx_total + i*nx_total*slab2_ny;
-          slab2_local[2*idx_slab] = fft_out_2_many[idx_fft][0];
-          slab2_local[2*idx_slab+1] = fft_out_2_many[idx_fft][1];
+    // write original data
+    if( procID == 0 ) printf(" Writing original data: imag\n" );
+    for ( int np=0; np<nProcess_slab; np++ ){
+      pId_temp = slab_id*nProcess_slab + np;
+      get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
+      slab_z_start = np * slab_nz;
+      for( k=0; k<slab_nz; k++){
+        for( j=0; j<ny_local; j++){
+          for(i=0; i<nx_local; i++ ){
+            idx_gather = np*send_size + i + j*nx_local + k*nx_local*ny_local;
+            idx_data = i + j*nx_local + (slab_z_start+k)*nx_local*ny_local;
+            in_re[idx_data] = slab_gather[idx_gather];
+          }
         }
       }
     }
-    MPI_Gather( slab2_local, send_size_2, MPI_DOUBLE, slab2_gather, send_size_2, MPI_DOUBLE, np, world );
+    if( saveData ) Write_Data_HDF5( file_id, "/slab4_imag", nx_local, ny_local, nz_local, in_re  );
+
+    time_end = MPI_Wtime();
+    time_fft = time_end-time_start;
+    time_total += time_fft;
   }
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  // order the data to in slab
-  if( procID == 0 ) printf(" Writing first slab\n" );
-  for ( int np=0; np<nproc; np++ ){
-    slab_y_start = np * slab2_ny;
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<slab2_ny; j++){
-        for(i=0; i<nx_total; i++ ){
-          idx_gather = np*send_size_2 + 2*( i + j*nx_total + k*nx_total*slab2_ny );
-          idx_data   = i + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
-          slab_real[idx_data] = slab2_gather[idx_gather];
-          slab_imag[idx_data] = slab2_gather[idx_gather+1];
-        }
-      }
-    }
+  time_fft = time_total / nRuns;
+  if( procID == 0 ) printf("\nTime total: %f\n", time_total );
+  if( procID == 0 ) printf("Time FFT: %f\n", time_fft );
+
+  // Save results to LOG file
+  if ( procID == 0 ){
+    myfile << nproc << " " << nproc_z << " " << nproc_y << " " << nproc_x << " " << nproc_z << " ";
+    myfile << nThreads << " " << time_total << " " << time_fft << endl;
+    myfile.close();
   }
-  // if( saveData ) Write_Data_HDF5( file_id, "/slab3_real", nx_total, ny_total, slab_nz, slab_real  );
-  // if( saveData ) Write_Data_HDF5( file_id, "/slab3_imag", nx_total, ny_total, slab_nz, slab_imag  );
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  // Compute inverse 2D FFTs
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-  // order the data to in slab
-  if( procID == 0 ) printf(" Sending back first slab: real\n" );
-  for ( int np=0; np<nProcess_slab; np++ ){
-    pId_temp = slab_id*nProcess_slab + np;
-    get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
-    slab_x_start = pId_x_temp * nx_local;
-    slab_y_start = pId_y_temp * ny_local;
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<ny_local; j++){
-        for(i=0; i<nx_local; i++ ){
-          idx = i + j*nx_local + k*nx_local*ny_local;
-          idx_slab = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
-          slab_local[idx] = slab_real[idx_slab];
-        }
-      }
-    }
-    MPI_Gather( slab_local, send_size, MPI_DOUBLE, slab_gather, send_size, MPI_DOUBLE, np, slab_comm );
-  }
-
-
-
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  // write original data
-  if( procID == 0 ) printf(" Writing original data: real\n" );
-  for ( int np=0; np<nProcess_slab; np++ ){
-    pId_temp = slab_id*nProcess_slab + np;
-    get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
-    slab_z_start = np * slab_nz;
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<ny_local; j++){
-        for(i=0; i<nx_local; i++ ){
-          idx_gather = np*send_size + i + j*nx_local + k*nx_local*ny_local;
-          idx_data = i + j*nx_local + (slab_z_start+k)*nx_local*ny_local;
-          in_re[idx_data] = slab_gather[idx_gather];
-        }
-      }
-    }
-  }
-
-  if( saveData ) Write_Data_HDF5( file_id, "/slab4_real", nx_local, ny_local, nz_local, in_re  );
-
-
-  // order the data to in slab
-  if( procID == 0 ) printf(" Sending back first slab: imag\n" );
-  for ( int np=0; np<nProcess_slab; np++ ){
-    pId_temp = slab_id*nProcess_slab + np;
-    get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
-    slab_x_start = pId_x_temp * nx_local;
-    slab_y_start = pId_y_temp * ny_local;
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<ny_local; j++){
-        for(i=0; i<nx_local; i++ ){
-          idx = i + j*nx_local + k*nx_local*ny_local;
-          idx_slab = (slab_x_start + i) + (slab_y_start + j)*nx_total + k*nx_total*ny_total;
-          slab_local[idx] = slab_imag[idx_slab];
-        }
-      }
-    }
-    MPI_Gather( slab_local, send_size, MPI_DOUBLE, slab_gather, send_size, MPI_DOUBLE, np, slab_comm );
-  }
-
-  // write original data
-  if( procID == 0 ) printf(" Writing original data: imag\n" );
-  for ( int np=0; np<nProcess_slab; np++ ){
-    pId_temp = slab_id*nProcess_slab + np;
-    get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
-    slab_z_start = np * slab_nz;
-    for( k=0; k<slab_nz; k++){
-      for( j=0; j<ny_local; j++){
-        for(i=0; i<nx_local; i++ ){
-          idx_gather = np*send_size + i + j*nx_local + k*nx_local*ny_local;
-          idx_data = i + j*nx_local + (slab_z_start+k)*nx_local*ny_local;
-          in_re[idx_data] = slab_gather[idx_gather];
-        }
-      }
-    }
-  }
-  if( saveData ) Write_Data_HDF5( file_id, "/slab4_imag", nx_local, ny_local, nz_local, in_re  );
-
-
-
-  time_end = MPI_Wtime();
-  if( procID == 0 ) printf("\nTime total: %f\n", time_end-time_start );
-
-
 
   // Close the file
-  status = H5Fclose(file_id);
+  if( saveData ) status = H5Fclose(file_id);
 
   MPI_Finalize();
   return 0;
