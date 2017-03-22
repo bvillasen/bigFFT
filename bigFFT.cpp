@@ -212,7 +212,6 @@ int main(int argc, char **argv){
   fftw_plan_with_nthreads( nThreads );
   if( procID == 0 ) printf("FFT Threads: %d \n", nThreads );
   if( procID == 0 ) printf("Making 2D FFTW plan\n" );
-  printf("Making 2D FFTW plan\n" );
   fftw_complex *fft_in_1, *fft_out_1;
   fftw_complex *fft_in_1_many, *fft_out_1_many;
   fftw_plan plan_1_fwd, plan_1_bck;
@@ -231,7 +230,7 @@ int main(int argc, char **argv){
                        fft_out_1_many, dim_FFT_2d, 1, nx_total*ny_total,
                        FFTW_FORWARD, FFTW_MEASURE );
 
-  if( procID == 0 ) printf("Making 1D FFTW plan\n" );
+  if( procID == 0 ) printf("Making 1D FFTW plan\n\n" );
   fftw_complex *fft_in_2, *fft_out_2;
   fftw_complex *fft_in_2_many, *fft_out_2_many;
   fftw_plan plan_2_fwd, plan_2_bck;
@@ -250,13 +249,16 @@ int main(int argc, char **argv){
 
 
 
-  double time_start, time_end, time_total, time_fft;
+  double time_start_comm, time_end_comm, time_start_fft, time_end_fft;
+  double time_total, time_fft, time_comm;
   time_total = 0;
+  time_comm = 0;
+  time_fft = 0;
   int nRuns = atoi(argv[4]);
   for( int run=0; run<nRuns; run++){
-    time_start = MPI_Wtime();
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    time_start_comm = MPI_Wtime();
 
-  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
     if( procID == 0 ) printf("Sending to first slab\n" );
     int slab_nz = nz_total/nproc;
     double *slab_gather;
@@ -307,14 +309,22 @@ int main(int argc, char **argv){
         }
       }
     }
+    time_end_comm =  MPI_Wtime();
+    time_comm += time_end_comm - time_start_comm;
+
     // if( saveData ) Write_Data_HDF5( file_id, "/slab", nx_total, ny_total, slab_nz, slab_real  );
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     if( procID == 0 ) printf(" Getting 2D FFTs...\n" );
+    time_start_fft =  MPI_Wtime();
     fftw_execute( plan_1_fwd_many );
+    time_end_fft =  MPI_Wtime();
+    time_fft += time_end_fft - time_start_fft;
+
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     if( procID == 0 ) printf("Sending to second slab (complex)\n" );
+    time_start_comm = MPI_Wtime();
     double *slab2_gather;
     double *slab2_local;
     int slab2_ny = ny_total/nproc;
@@ -367,6 +377,9 @@ int main(int argc, char **argv){
         }
       }
     }
+
+    time_end_comm = MPI_Wtime();
+    time_comm += time_end_comm-time_start_comm;
     // if( saveData ) Write_Data_HDF5( file_id, "/slab2_real", nx_total, slab2_ny, nz_total, slab2_real  );
     // if( saveData ) Write_Data_HDF5( file_id, "/slab2_imag", nx_total, slab2_ny, nz_total, slab2_imag  );
 
@@ -374,7 +387,10 @@ int main(int argc, char **argv){
 
     // NOTE: Transposing X-Z may improve performance
     if( procID == 0 ) printf(" Getting 1D FFTs...\n" );
+    time_start_fft =  MPI_Wtime();
     fftw_execute( plan_2_fwd_many );
+    time_end_fft =  MPI_Wtime();
+    time_fft += time_end_fft - time_start_fft;
 
 
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -383,6 +399,8 @@ int main(int argc, char **argv){
     // Compte inverse 1D FFTs
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////
     if( procID == 0 ) printf("Sending back second slab (complex)\n" );
+    time_start_comm = MPI_Wtime();
+
     for ( int np=0; np<nproc; np++ ){
       slab_z_start = np*slab_nz;
       for( k=0; k<slab_nz; k++){
@@ -505,17 +523,20 @@ int main(int argc, char **argv){
     }
     if( saveData ) Write_Data_HDF5( file_id, "/slab4_imag", nx_local, ny_local, nz_local, in_re  );
 
-    time_end = MPI_Wtime();
-    time_fft = time_end-time_start;
-    time_total += time_fft;
+    time_end_comm = MPI_Wtime();
+    time_comm += time_end_comm-time_start_comm;
+    time_total += time_fft + time_comm;
   }
-  time_fft = time_total / nRuns;
+  time_total = time_total / nRuns;
+  time_fft = time_fft / nRuns;
+  time_end_comm = time_comm / nRuns;
   if( procID == 0 ) printf("\nTime total: %f\n", time_total );
   if( procID == 0 ) printf("Time FFT: %f\n", time_fft );
-
+  if( procID == 0 ) printf("Time COMM: %f\n", time_comm );
   // Save results to LOG file
   if ( procID == 0 ){
-    myfile << nproc << " " << nproc_z << " " << nproc_y << " " << nproc_x << " " << nproc_z << " ";
+    myfile << nz_total << " " << ny_total << " " << nx_total << " " << nz_local << " " << ny_local << " " << nx_local << " ";
+    myfile << nproc << " " << nproc_z << " " << nproc_y << " " << nproc_x << " ";
     myfile << nThreads << " " << time_total << " " << time_fft << endl;
     myfile.close();
   }
@@ -538,9 +559,9 @@ void InitializeChollaMPI(int *pargc, char **pargv[])
   MPI_Comm_size(MPI_COMM_WORLD, &nproc);
   // nproc_z = sqrt(nproc);
   // nproc_y = sqrt(nproc);
-  nproc_z = 2;
-  nproc_y = 2;
-  nproc_x = 2;
+  nproc_z = pow(nproc, 1/3.);
+  nproc_y = pow(nproc, 1/3.);
+  nproc_x = pow(nproc, 1/3.);
 
   nProc[0] = nproc_z;
   nProc[1] = nproc_y;
