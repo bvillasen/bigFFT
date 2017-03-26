@@ -248,6 +248,29 @@ int main(int argc, char **argv){
                        FFTW_FORWARD, FFTW_MEASURE );
 
 
+  // MEMORY FOR FIRST SLAB
+  int slab_nz = nz_total/nproc;
+  double *slab_gather;
+  double *slab_local;
+  int send_size = slab_nz * nx_local * ny_local;
+  slab_gather = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
+  slab_local  = (double *) malloc( send_size *sizeof(double) );
+
+  double *slab_real, *slab_imag;
+  slab_real = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
+  slab_imag = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
+  int pId_temp, pId_z_temp, pId_y_temp, pId_x_temp;
+  int slab_x_start, slab_y_start, slab_z_start; // slab_x_end, slab_y_end;
+  int idx_gather, idx_data, idx_fft;
+
+  double *slab2_gather;
+  double *slab2_local;
+  int slab2_ny = ny_total/nproc;
+  int send_size_2 = 2 * slab_nz * nx_total * slab2_ny;
+  slab2_gather = (double *) malloc( nproc * send_size_2 *sizeof(double) );
+  slab2_local  = (double *) malloc( send_size_2 *sizeof(double) );
+
+
 
   double time_start_comm, time_end_comm, time_start_fft, time_end_fft;
   double time_total, time_fft, time_comm;
@@ -260,12 +283,12 @@ int main(int argc, char **argv){
     time_start_comm = MPI_Wtime();
 
     if( procID == 0 ) printf("Sending to first slab\n" );
-    int slab_nz = nz_total/nproc;
-    double *slab_gather;
-    double *slab_local;
-    int send_size = slab_nz * nx_local * ny_local;
-    slab_gather = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
-    slab_local  = (double *) malloc( send_size *sizeof(double) );
+    // int slab_nz = nz_total/nproc;
+    // double *slab_gather;
+    // double *slab_local;
+    // int send_size = slab_nz * nx_local * ny_local;
+    // slab_gather = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
+    // slab_local  = (double *) malloc( send_size *sizeof(double) );
     int z_start, z_end;
     int idx_slab, idx;
     for( int np=0; np<nProcess_slab; np++ ){
@@ -284,12 +307,12 @@ int main(int argc, char **argv){
 
     // order the data to in slab
     if( procID == 0 ) printf(" Writing first slab\n" );
-    double *slab_real, *slab_imag;
-    slab_real = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
-    slab_imag = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
-    int pId_temp, pId_z_temp, pId_y_temp, pId_x_temp;
-    int slab_x_start, slab_y_start, slab_z_start; // slab_x_end, slab_y_end;
-    int idx_gather, idx_data, idx_fft;
+    // double *slab_real, *slab_imag;
+    // slab_real = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
+    // slab_imag = (double *) malloc( nProcess_slab * send_size *sizeof(double) );
+    // int pId_temp, pId_z_temp, pId_y_temp, pId_x_temp;
+    // int slab_x_start, slab_y_start, slab_z_start; // slab_x_end, slab_y_end;
+    // int idx_gather, idx_data, idx_fft;
     for ( int np=0; np<nProcess_slab; np++ ){
       pId_temp = slab_id*nProcess_slab + np;
       get_mpi_id_3D( pId_temp, nproc_x, nproc_y, pId_x_temp, pId_y_temp, pId_z_temp );
@@ -325,12 +348,12 @@ int main(int argc, char **argv){
 
     if( procID == 0 ) printf("Sending to second slab (complex)\n" );
     time_start_comm = MPI_Wtime();
-    double *slab2_gather;
-    double *slab2_local;
-    int slab2_ny = ny_total/nproc;
-    int send_size_2 = 2 * slab_nz * nx_total * slab2_ny;
-    slab2_gather = (double *) malloc( nproc * send_size_2 *sizeof(double) );
-    slab2_local  = (double *) malloc( send_size_2 *sizeof(double) );
+    // double *slab2_gather;
+    // double *slab2_local;
+    // int slab2_ny = ny_total/nproc;
+    // int send_size_2 = 2 * slab_nz * nx_total * slab2_ny;
+    // slab2_gather = (double *) malloc( nproc * send_size_2 *sizeof(double) );
+    // slab2_local  = (double *) malloc( send_size_2 *sizeof(double) );
     for ( int np=0; np<nproc; np++ ){
       slab_y_start = np*slab2_ny;
       for( k=0; k<slab_nz; k++){
@@ -525,19 +548,19 @@ int main(int argc, char **argv){
 
     time_end_comm = MPI_Wtime();
     time_comm += time_end_comm-time_start_comm;
-    time_total += time_fft + time_comm;
+    // time_total += time_fft + time_comm;
   }
-  time_total = time_total / nRuns;
+  time_total = (time_fft + time_comm) / nRuns;
   time_fft = time_fft / nRuns;
-  time_end_comm = time_comm / nRuns;
+  time_comm = time_comm / nRuns;
   if( procID == 0 ) printf("\nTime total: %f\n", time_total );
   if( procID == 0 ) printf("Time FFT: %f\n", time_fft );
   if( procID == 0 ) printf("Time COMM: %f\n", time_comm );
   // Save results to LOG file
   if ( procID == 0 ){
-    myfile << nz_total << " " << ny_total << " " << nx_total << " " << nz_local << " " << ny_local << " " << nx_local << " ";
     myfile << nproc << " " << nproc_z << " " << nproc_y << " " << nproc_x << " ";
-    myfile << nThreads << " " << time_total << " " << time_fft << endl;
+    myfile << nz_total << " " << ny_total << " " << nx_total << " " << nz_local << " " << ny_local << " " << nx_local << " ";
+    myfile << nThreads << " " << time_total << " " << time_fft << " " << time_comm << endl;
     myfile.close();
   }
 
